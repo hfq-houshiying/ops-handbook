@@ -46,26 +46,101 @@ nginx 版本选择稳定版本 `1.14.0`，或者早期版本的最后一个版�
 如对新功能无需求，目前确定版本为 `1.12.2` 版本
 
 
-## 安装步骤
+## 在不删除客户端连接的情况下升级nginx
 
-安装选择源码安装方式，安装步骤如下:
+在升级过程中将使用以下信号：
+
+`USR2`：生成一组新的 nginx `master/worker` 进程，而不会影响之前的设置。
+
+`WINCH`：告诉 Nginx master 进程正常地停止其关联的 worker 进程。
+
+`HUP`：    当 nginx 接收到 HUP 信号时，它会尝试先解析配置文件，如果成功，就应用新的配置文件(例如，重新打开日志文件或监听的套接字)。之后，nginx 运行新的工作进程并从容关闭旧的工作进程。通知工作进程关闭监听套接字，但是继续为当前连接的客户提供服务。所有的客户端的服务完成后，旧的工作进程被关闭。如果新的配置文件应用失败，nginx 将继续使用旧的配置文件进行工作。
+
+`QUIT`：优雅的关闭 master/worker 进程。
+
+`TERM`：快速关闭 master/worker 进程。
+
+`KILL`：立即终止 master/worker 进程而不做任何清理。
+
+
+### 查找 nginx 进程 pid
+
+使用 ps aux 查找
 
 ```
-apt-get install libpcre3-dev libgd-dev libgeoip-dev
-curl -sSLO http://nginx.org/download/nginx-1.12.2.tar.gz
-tar xf nginx-1.12.2.tar.gz
-cd nginx
-./configure --with-cc-opt='-g -O2 -fPIE -fstack-protector-strong -Wformat -Werror=format-security -Wdate-time -D_FORTIFY_SOURCE=2' --with-ld-opt='-Wl,-Bsymbolic-functions -fPIE -pie -Wl,-z,relro -Wl,-z,now' --prefix=/usr/share/nginx --conf-path=/etc/nginx/nginx.conf --http-log-path=/var/log/nginx/access.log --error-log-path=/var/log/nginx/error.log --lock-path=/var/lock/nginx.lock --pid-path=/run/nginx.pid --http-client-body-temp-path=/var/lib/nginx/body --http-fastcgi-temp-path=/var/lib/nginx/fastcgi --http-proxy-temp-path=/var/lib/nginx/proxy --http-scgi-temp-path=/var/lib/nginx/scgi --http-uwsgi-temp-path=/var/lib/nginx/uwsgi --with-debug --with-pcre-jit --with-ipv6 --with-http_ssl_module --with-http_stub_status_module --with-http_realip_module --with-http_auth_request_module --with-http_addition_module --with-http_dav_module --with-http_geoip_module --with-http_gunzip_module --with-http_gzip_static_module --with-http_image_filter_module --with-http_v2_module --with-http_sub_module --with-http_xslt_module --with-stream --with-stream_ssl_module --with-mail --with-mail_ssl_module --with-threads
-make
+$ ps aux|grep nginx
+root     26378  0.0  0.4 125080  8672 ?        S    10:18   0:00 nginx: master process /usr/sbin/nginx -g daemon on; master_process on;
+www-data 26380  0.0  0.1 125456  3180 ?        S    10:18   0:00 nginx: worker process
+```
 
-#将 objs 目录下编译出的 nginx 拿到主机 /opt 目录
-# 将 原 /usr/sbin/nginx  mv 成 /usr/sbin/nginx-old
-将新版的 nginx 放到 /usr/sbin/nginx
+查看 pid 文件查找
 
-查看 nginx 是否一个机器起多个nginx，如果没有
-/usr/sbin/nginx -t
-pkill nginx
-/usr/sbin/nginx
+```
+$cat /run/nginx.pid
+```
 
-如果有 nginx -c xxx.conf
+如果有两个 Nginx 主进程正在运行，则旧进程将被移动到/run/nginx.pid.oldbin
+
+### 启动新的 nginx
+
+当 nginx 二进制文件更新替换完成之后, 发送 USR2 信号：
+
+```
+sudo kill -s USR2 `cat /run/nginx.pid`
+```
+
+会启动第二组 nginx  worker/master 进程
+
+```
+$ ps aux|grep nginx
+root     26378  0.0  0.4 125080 10000 ?        S    10:18   0:00 nginx: master process /usr/sbin/nginx -g daemon on; master_process on;
+www-data 26380  0.0  0.1 125456  3180 ?        S    10:18   0:00 nginx: worker process
+root     26420  0.0  0.4 125080  9688 ?        S    10:38   0:00 nginx: master process /usr/sbin/nginx -g daemon on; master_process on;
+www-data 26421  0.0  0.1 125456  3276 ?        S    10:38   0:00 nginx: worker process
+vagrant  26423  0.0  0.0  12944   976 pts/0    S+   10:38   0:00 grep --color=auto nginx
+```
+
+原 pid 已经移动到 `/run/nginx.pid.oldbin` ,新的进程号在 `/run/nginx.pid`
+
+```
+$ tail -n +1 /run/nginx.pid*
+==> /run/nginx.pid <==
+26420
+
+==> /run/nginx.pid.oldbin <==
+26378
+```
+
+### 停止旧版本的 worker 进程
+
+向旧版本的 nginx 发出 `WINCH` 信号，旧版本将处理完所有连接后停止接入新的连接
+
+```
+$ ps aux|grep nginx
+root     26378  0.0  0.4 125080 10000 ?        S    10:18   0:00 nginx: master process /usr/sbin/nginx -g daemon on; master_process on;
+root     26420  0.0  0.4 125080  9688 ?        S    10:38   0:00 nginx: master process /usr/sbin/nginx -g daemon on; master_process on;
+www-data 26421  0.0  0.1 125456  3276 ?        S    10:38   0:00 nginx: worker process
+vagrant  26429  0.0  0.0  12944   968 pts/0    S+   10:43   0:00 grep --color=auto nginx
+```
+
+### 评估结果并采取后续步骤
+
+如果升级成功，向旧的进程发送 `QUIT` 信号
+
+```
+sudo kill -s QUIT `cat /run/nginx.pid.oldbin`
+```
+
+旧的主进程将正常退出，只留下您的新 Nginx 的 master/worker 进程。此时，您已成功执行 Nginx 的版本升级，而不会中断客户端连接。
+
+
+如果新版本遇到问题，回到旧版本, 向旧版本的 nginx 发送 `HUP` 信号来重新启动旧 nginx 的 worker 进程，此时这两组 nginx 都可以接受客户端的连接
+
+```
+sudo kill -s HUP `cat /run/nginx.pid.oldbin`
+```
+此时通过发送 `QUIT` 信号停止有缺陷的新版本,版本回退到旧版本。
+
+```
+sudo kill -s QUIT `cat /run/nginx.pid`
 ```
