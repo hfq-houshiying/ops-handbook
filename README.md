@@ -7,3 +7,5 @@
 [ubuntu 开机启动](./ubuntu-autostart.md)
 
 [apt-get 使用](./apt-get.md)
+
+[nginx 升级](./nginx-upgrade.md)
